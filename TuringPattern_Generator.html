@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Turing Pattern Generator (Optimized)</title> <!-- v: タイトル変更 -->
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Font: Manrope -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            /* 日本語フォントが指定されていなかったので、Noto Sans JP を Manrope のフォールバックに追加 */
+            font-family: 'Manrope', 'Noto Sans JP', sans-serif;
+            background-color: #000;
+            color: #fff;
+            overflow: hidden; /* ページ全体のスクロールを禁止 */
+        }
+        /* スライダーの見た目をモノトーンにカスタム */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #4b5563; /* gray-600 */
+            outline: none;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+        }
+        input[type="range"]:hover {
+            opacity: 1;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ffffff; /* white */
+            cursor: pointer;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ffffff; /* white */
+            cursor: pointer;
+        }
+        /* すりガラス効果 */
+        @supports (backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px)) {
+            .glassmorphism {
+                /* v: 修正 - alpha値を 0.5 から 0.7 に変更して暗くする */
+                background-color: rgba(17, 24, 39, 0.7); /* bg-gray-900/70 */
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
+            }
+        }
+        /* Firefox用フォールバック (backdrop-filter非対応時) */
+        @supports not (backdrop-filter: blur(10px)) and not (-webkit-backdrop-filter: blur(10px)) {
+            .glassmorphism {
+                /* v: 修正 - alpha値を 0.85 から 0.9 に変更 */
+                background-color: rgba(17, 24, 39, 0.9); /* さらに濃い背景 */
+            }
+        }
+        
+        /* コントロールパネルのスクロールバーを控えめに */
+        .controls-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .controls-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .controls-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #4b5563; /* gray-600 */
+            border-radius: 3px;
+        }
+        .controls-scrollbar {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 transparent;
+        }
+    </style>
+</head>
+<body class="bg-black text-white font-sans antialiased">
+
+    <!-- 1. タイル表示される背景キャンバス (2D) -->
+    <!-- v: 修正 z-[-1] -> z-0 (スマホでのタップイベント取得のため) -->
+    <canvas id="background-canvas" class="fixed top-0 left-0 w-full h-full z-0 cursor-crosshair"></canvas>
+
+    <!-- 2. シミュレーション用の非表示キャンバス (WebGL) -->
+    <canvas id="display-canvas" width="1024" height="1024" style="display: none;"></canvas>
+
+    <!-- 3. タイトル (左上) -->
+    <!-- v: 修正 - 視認性向上のため glassmorphism を適用 -->
+    <header class="fixed top-4 left-4 right-4 lg:top-8 lg:left-8 lg:right-auto z-10 p-4 rounded-lg glassmorphism border border-gray-700/50">
+        <h1 class="text-3xl font-bold text-white">
+            Turing Pattern Generator
+        </h1>
+        <p class="text-lg text-gray-300">
+            Seamless texture generation with reaction-diffusion.
+        </p>
+        <p class="text-sm text-yellow-400 mt-2">
+            Click or drag on the background to add seeds.
+        </p>
+    </header>
+
+    <!-- 4. コントロールパネル (右上) -->
+    <div class="fixed top-44 left-4 right-4 lg:top-8 lg:right-8 lg:left-auto lg:w-full lg:max-w-sm glassmorphism border border-gray-700/50 rounded-lg shadow-2xl z-20">
+        
+        <div class="flex justify-between items-center p-6 border-b border-gray-600">
+            <h2 class="text-2xl font-semibold text-white">Controls</h2>
+            <button id="toggle-controls-btn" class="p-1 text-gray-400 hover:text-white lg:hidden">
+                <!-- SVGアイコン (デフォルトは開いた状態) -->
+                <svg id="controls-icon-open" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+                </svg>
+                <svg id="controls-icon-closed" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+        </div>
+
+        <!-- スクロール可能な内部コンテナ -->
+        <div id="controls-body" class="max-h-[50vh] lg:max-h-[calc(100vh-160px)] overflow-y-auto p-6 controls-scrollbar">
+            
+            <!-- プリセット -->
+            <div class="mb-6">
+                <label for="preset-select" class="block text-sm font-medium text-gray-300 mb-2">Presets</label>
+                <select id="preset-select" class="w-full p-2 rounded-md bg-gray-800 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-white/50">
+                    <option value="custom">Custom</option>
+                    <option value="mitosis">Mitosis (U-Sketch)</option> <!-- v: ラベル変更 -->
+                    <option value="coral">Coral</option>
+                    <option value="spots">Spots</option>
+                    <option value="stripes">Stripes</option>
+                    <option value="worms">Worms</option>
+                </select>
+            </div>
+
+            <!-- スライダー -->
+            <div class="space-y-6">
+                <!-- F (Feed Rate) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="f-slider" class="block text-sm font-medium text-gray-300">Feed Rate (F)</label>
+                        <span id="f-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">0.055</span>
+                    </div>
+                    <input type="range" id="f-slider" min="0.01" max="0.1" step="0.001" value="0.055" class="mt-2">
+                </div>
+                
+                <!-- k (Kill Rate) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="k-slider" class="block text-sm font-medium text-gray-300">Kill Rate (k)</label>
+                        <span id="k-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">0.062</span>
+                    </div>
+                    <input type="range" id="k-slider" min="0.04" max="0.07" step="0.001" value="0.062" class="mt-2">
+                </div>
+
+                <!-- dA (Diffusion Rate A) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="da-slider" class="block text-sm font-medium text-gray-300">Diffusion Rate A</label>
+                        <span id="da-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">1.00</span>
+                    </div>
+                    <input type="range" id="da-slider" min="0.1" max="1.5" step="0.01" value="1.0" class="mt-2">
+                </div>
+
+                <!-- dB (Diffusion Rate B) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="db-slider" class="block text-sm font-medium text-gray-300">Diffusion Rate B</label>
+                        <span id="db-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">0.50</span>
+                    </div>
+                    <input type="range" id="db-slider" min="0.1" max="1.5" step="0.01" value="0.5" class="mt-2">
+                </div>
+                
+                <!-- dt (Time Step) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="dt-slider" class="block text-sm font-medium text-gray-300">Time Step (dt)</label>
+                        <!-- 修正: デフォルト値を 1.0 に -->
+                        <span id="dt-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">1.00</span>
+                    </div>
+                    <!-- 修正: 範囲とデフォルト値を変更 (min 0.5, max 1.5, value 1.0) -->
+                    <input type="range" id="dt-slider" min="0.5" max="1.5" step="0.05" value="1.0" class="mt-2">
+                </div>
+
+                <!-- Simulation Speed (Steps / Frame) -->
+                <div>
+                    <div class="flex justify-between items-center">
+                        <label for="speed-slider" class="block text-sm font-medium text-gray-300">Simulation Speed</label>
+                        <!-- v: 修正: デフォルト値を 15 に (Androidフリーズ対策) -->
+                        <span id="speed-value" class="text-sm font-mono px-2 py-1 bg-gray-700 rounded-md">15</span>
+                    </div>
+                    <!-- v: 修正: デフォルト値を 15 に (Androidフリーズ対策) -->
+                    <input type="range" id="speed-slider" min="1" max="60" step="1" value="15" class="mt-2">
+                </div>
+
+            </div>
+
+            <div class="flex justify-between gap-4 mt-8 pt-6 border-t border-gray-600">
+                <button id="pause-button" class="flex-1 px-4 py-2 rounded-lg bg-gray-200 text-black font-semibold hover:bg-white transition-colors shadow">Pause</button>
+                <button id="reset-button" class="flex-1 px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white font-semibold transition-colors shadow">Reset</button>
+                <button id="download-button" class="flex-1 px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white font-semibold transition-colors shadow">Download 1024px</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- GLSL シェーダー定義 -->
+
+    <!-- 頂点シェーダー (シミュレーション・描画で共通) -->
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        // 画面全体を覆う矩形を描画するためのシンプルな頂点シェーダー
+        attribute vec2 a_position; // 頂点座標 (-1.0 ~ 1.0)
+        varying vec2 v_texCoord;   // テクスチャ座標 (0.0 ~ 1.0) をフラグメントシェーダーに渡す
+
+        void main() {
+            gl_Position = vec4(a_position, 0.0, 1.0);
+            // 頂点座標 (-1, -1) を テクスチャ座標 (0, 0) にマッピング
+            v_texCoord = a_position * 0.5 + 0.5;
+        }
+    </script>
+
+    <!-- シミュレーション用フラグメントシェーダー (GPGPU) -->
+    <script id="simulation-fs" type="x-shader/x-fragment">
+        precision highp float; // 高い精度を要求
+        
+        uniform sampler2D u_texture;  // 前のフレームの状態 (A=r, B=g)
+        uniform vec2 u_resolution; // テクスチャの解像度 (e.g., 1024x1024)
+        uniform float u_f;
+        uniform float u_k;
+        uniform float u_dA;
+        uniform float u_dB;
+        uniform float u_dt;
+
+        varying vec2 v_texCoord; // 0.0 ~ 1.0 のテクスチャ座標
+
+        // ラプラシアン（近傍ピクセルの重み付き平均）を計算
+        // 元のCPUコードの重み付け (center: -1, cardinal: 0.2, diagonal: 0.05) を再現
+        vec2 laplacian(vec2 coord) {
+            vec2 sum = vec2(0.0);
+            vec2 texelSize = 1.0 / u_resolution; // 1ピクセル分のUV座標
+
+            // 状態 (A, B) を vec2 として取得
+            sum += texture2D(u_texture, coord).rg * -1.0; // Center
+            
+            sum += texture2D(u_texture, coord + vec2(-1.0,  0.0) * texelSize).rg * 0.2; // Left
+            sum += texture2D(u_texture, coord + vec2( 1.0,  0.0) * texelSize).rg * 0.2; // Right
+            sum += texture2D(u_texture, coord + vec2( 0.0, -1.0) * texelSize).rg * 0.2; // Top
+            sum += texture2D(u_texture, coord + vec2( 0.0,  1.0) * texelSize).rg * 0.2; // Bottom
+            
+            sum += texture2D(u_texture, coord + vec2(-1.0, -1.0) * texelSize).rg * 0.05; // Top-Left
+            sum += texture2D(u_texture, coord + vec2( 1.0, -1.0) * texelSize).rg * 0.05; // Top-Right
+            sum += texture2D(u_texture, coord + vec2(-1.0,  1.0) * texelSize).rg * 0.05; // Bottom-Left
+            sum += texture2D(u_texture, coord + vec2( 1.0,  1.0) * texelSize).rg * 0.05; // Bottom-Right
+            
+            return sum;
+        }
+
+        void main() {
+            vec2 state = texture2D(u_texture, v_texCoord).rg;
+            float A = state.r;
+            float B = state.g;
+
+            vec2 lap = laplacian(v_texCoord);
+            float lapA = lap.r;
+            float lapB = lap.g;
+
+            float reaction = A * B * B;
+            
+            float deltaA = (u_dA * lapA - reaction + u_f * (1.0 - A)) * u_dt;
+            float deltaB = (u_dB * lapB + reaction - (u_k + u_f) * B) * u_dt;
+
+            float newA = clamp(A + deltaA, 0.0, 1.0);
+            float newB = clamp(B + deltaB, 0.0, 1.0);
+
+            // 新しい状態 (A, B) を RG チャンネルに書き込む
+            gl_FragColor = vec4(newA, newB, 0.0, 1.0);
+        }
+    </script>
+
+    <!-- 描画用フラグメントシェーダー (Bの値をグレースケールで表示) -->
+    <!-- v: 修正 - コントラスト調整ロジックに変更 -->
+    <script id="draw-fs" type="x-shader/x-fragment">
+        precision mediump float;
+        
+        uniform sampler2D u_texture; // 現在のシミュレーション状態
+        varying vec2 v_texCoord;
+
+        // B の値がこの閾値を超えると白 (1.0) になる
+        const float WHITE_THRESHOLD = 0.35; 
+        // B の値がこの閾値以下だと黒 (0.0) になる
+        const float BLACK_THRESHOLD = 0.1;
+
+        void main() {
+            float B = texture2D(u_texture, v_texCoord).g;
+            
+            // 0.0 から 1.0 の範囲に正規化 (smoothstep でコントラストを調整)
+            float color = smoothstep(BLACK_THRESHOLD, WHITE_THRESHOLD, B);
+            
+            gl_FragColor = vec4(color, color, color, 1.0);
+        }
+    </script>
+
+    <!-- シード（種）追加用フラグメントシェーダー -->
+    <script id="seed-fs" type="x-shader/x-fragment">
+        precision highp float;
+        
+        uniform sampler2D u_texture; // 現在の状態
+        uniform vec2 u_center; // シードの中心座標 (0.0 ~ 1.0)
+        uniform float u_radius; // シードの半径 (0.0 ~ 1.0)
+        uniform vec2 u_resolution; // 解像度
+
+        varying vec2 v_texCoord;
+
+        void main() {
+            vec2 state = texture2D(u_texture, v_texCoord).rg;
+            
+            // ピクセル単位での距離を計算 (アスペクト比を考慮)
+            float dx = (v_texCoord.x - u_center.x) * u_resolution.x;
+            float dy = (v_texCoord.y - u_center.y) * u_resolution.y;
+            float distSq = dx * dx + dy * dy;
+            float radiusSq = u_radius * u_radius;
+
+            if (distSq <= radiusSq) {
+                // 円内なら B の値を 1.0 にする
+                gl_FragColor = vec4(state.r, 1.0, 0.0, 1.0);
+            } else {
+                // 円外なら元の状態を維持
+                gl_FragColor = vec4(state.r, state.g, 0.0, 1.0);
+            }
+        }
+    </script>
+
+
+    <script type="module">
+        // --- 定数 -----------------------------------------------------------------
+        const SIM_SIZE = 1024;        // シミュレーションの解像度 (1024x1024)
+        const DISPLAY_SIZE = 1024;    // 非表示キャンバスの解像度 (1024x1024)
+
+        // --- DOM要素 --------------------------------------------------------------
+        const canvas = document.getElementById('display-canvas');
+        const gl = canvas.getContext('webgl');
+        
+        const bgCanvas = document.getElementById('background-canvas');
+        const bgCtx = bgCanvas.getContext('2d', { alpha: false }); 
+
+        const pauseButton = document.getElementById('pause-button');
+        const resetButton = document.getElementById('reset-button');
+        const downloadButton = document.getElementById('download-button');
+        const presetSelect = document.getElementById('preset-select');
+        
+        // スライダーと値の表示
+        const sliders = {
+            f: document.getElementById('f-slider'),
+            k: document.getElementById('k-slider'),
+            dA: document.getElementById('da-slider'),
+            dB: document.getElementById('db-slider'),
+            dt: document.getElementById('dt-slider'),
+            speed: document.getElementById('speed-slider'), 
+        };
+        const values = {
+            f: document.getElementById('f-value'),
+            k: document.getElementById('k-value'),
+            dA: document.getElementById('da-value'),
+            dB: document.getElementById('db-value'),
+            dt: document.getElementById('dt-value'),
+            speed: document.getElementById('speed-value'),
+        };
+
+        const toggleControlsBtn = document.getElementById('toggle-controls-btn');
+        const controlsBody = document.getElementById('controls-body');
+        const controlsIconOpen = document.getElementById('controls-icon-open');
+        const controlsIconClosed = document.getElementById('controls-icon-closed');
+
+        // v: 修正 - プリセット値の `worms` を変更
+        // v: 修正 - Mitosis, Spots, Stripes の k 値を調整
+        // v: 修正 - ユーザー指定の Mitosis パラメータに変更
+        const presets = {
+            custom: {}, 
+            // v: 修正 - ユーザー指定 (f: 0.031, k: 0.066, dA: 1.10, dB: 0.40)
+            mitosis: { f: 0.031, k: 0.066, dA: 1.10, dB: 0.40 },
+            coral: { f: 0.0545, k: 0.062, dA: 1.0, dB: 0.5 },
+            // v: 修正 (k: 0.065 -> 0.063) 安定性を向上
+            // v: 修正 - ユーザー指定の Spots パラメータに変更 (f: 0.010, k: 0.055, dA: 1.17, dB: 0.24)
+            spots: { f: 0.010, k: 0.055, dA: 1.17, dB: 0.24 },
+            // v: 修正 (k: 0.06 -> 0.055) 縞模様領域に変更
+            // v: 修正 - ユーザー指定の Stripes パラメータに変更 (f: 0.025, k: 0.055, dA: 1.10, dB: 0.39)
+            stripes: { f: 0.025, k: 0.055, dA: 1.10, dB: 0.39 },
+            // worms: { f: 0.078, k: 0.061, dA: 1.0, dB: 0.5 }, // 元の値 (カオス的)
+            // worms: { f: 0.029, k: 0.057, dA: 1.0, dB: 0.5 }, // 変更: うねる縞模様
+            // v: 修正 - ユーザー指定の Worms パラメータに変更 (f: 0.032, k: 0.059, dA: 1.06, dB: 0.64)
+            worms: { f: 0.032, k: 0.059, dA: 1.06, dB: 0.64 },
+        };
+
+        // --- シミュレーション変数 -------------------------------------------------
+        // v: 修正 - dt のデフォルト値を 1.0 に変更
+        let params = {
+            f: 0.055,
+            k: 0.062,
+            dA: 1.0,
+            dB: 0.5,
+            dt: 1.0, 
+            speed: 15, // v: 修正: 20 -> 15 (Androidフリーズ対策)
+        };
+        
+        let isRunning = true;
+        let animationFrameId = null;
+        // v: 修正 - pattern を復元
+        let pattern = null; 
+        let isDrawing = false; 
+        let dpr = 1; 
+        // v: 修正 - renderState を patternOffset に戻す
+        let patternOffset = { x: 0, y: 0 }; 
+        
+        // v: 削除 - cover 描画用の状態
+        /*
+        let renderState = {
+            ratio: 1.0,
+            offsetX: 0,
+            offsetY: 0
+        };
+        */
+
+        // --- v4: WebGL グローバル変数 ---------------------------------------------
+        let simProgram, drawProgram, seedProgram; // GLSL プログラム
+        let quadBuffer; // 画面全体を覆う矩形のバッファ
+        
+        // ピンポン用のテクスチャとフレームバッファ
+        let textures = [];
+        let fbos = [];
+        let currentState = 0; // 0 または 1 (ピンポン用インデックス)
+
+        // --- v4: WebGL ヘルパー関数 ----------------------------------------------
+
+        /**
+         * シェーダーをコンパイルする
+         */
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Error compiling shader:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        /**
+         * GLSLプログラムを作成（リンク）する
+         */
+        function createProgram(gl, vsSource, fsSource) {
+            const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+            const program = gl.createProgram();
+            gl.attachShader(program, vs);
+            gl.attachShader(program, fs);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Error linking program:', gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return null;
+            }
+            // シェーダーはリンク後に不要
+            gl.deleteShader(vs);
+            gl.deleteShader(fs);
+            return program;
+        }
+
+        /**
+         * 描画用のテクスチャとフレームバッファを作成
+         */
+        function createTextureAndFBO(gl, width, height) {
+            // WebGLで浮動小数点数テクスチャを扱うための拡張機能
+            // v: 修正 - 拡張機能のサポートをチェック
+            const floatExt = gl.getExtension('OES_texture_float');
+            if (!floatExt) {
+                console.error("OES_texture_float extension is not supported.");
+                return null; // v: 失敗したら null を返す
+            }
+            
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            // 状態 (A, B) を RG チャンネルに格納するため、ピクセルあたり2チャンネルの浮動小数点数テクスチャを作成
+            // RGBA (FLOAT) を使う (RG (FLOAT) はサポート外が多いため)
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.FLOAT, null);
+            
+            // テクスチャのラッピング（タイリング）とフィルタリングの設定
+            // gl.CLAMP_TO_EDGE を使うと端が黒くなるため、gl.REPEAT でシームレスにする
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            // gl.NEAREST を使う (LINEARは浮動小数点テクスチャではサポート外の場合がある)
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            // フレームバッファオブジェクト (FBO) を作成
+            const fbo = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            // テクスチャをFBOにアタッチ
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+            // v: 修正 - FBOが完全かチェック
+            const fboStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+            if (fboStatus !== gl.FRAMEBUFFER_COMPLETE) {
+                console.error("Framebuffer is not complete: " + fboStatus);
+                return null;
+            }
+
+            // バインドを解除
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            
+            return { texture, fbo };
+        }
+
+        /**
+         * WebGLの初期化処理
+         */
+        function initWebGL() {
+            if (!gl) {
+                console.error("WebGL is not supported in your browser. Please use a compatible browser.");
+                return false;
+            }
+            
+            // シェーダーソースを取得
+            const vsSource = document.getElementById('vertex-shader').textContent;
+            const simFsSource = document.getElementById('simulation-fs').textContent;
+            const drawFsSource = document.getElementById('draw-fs').textContent;
+            const seedFsSource = document.getElementById('seed-fs').textContent;
+
+            // プログラムを作成
+            simProgram = createProgram(gl, vsSource, simFsSource);
+            drawProgram = createProgram(gl, vsSource, drawFsSource);
+            seedProgram = createProgram(gl, vsSource, seedFsSource);
+
+            // 画面全体を覆う矩形（-1, -1) から (1, 1) の頂点バッファを作成
+            quadBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                -1, -1, 1, -1, -1, 1,
+                -1, 1,  1, -1,  1, 1
+            ]), gl.STATIC_DRAW);
+
+            // ピンポン用のテクスチャとFBOを2つ作成
+            const texFbo1 = createTextureAndFBO(gl, SIM_SIZE, SIM_SIZE);
+            const texFbo2 = createTextureAndFBO(gl, SIM_SIZE, SIM_SIZE);
+
+            // v: 修正 - FBO作成失敗をチェック
+            if (!texFbo1 || !texFbo2) {
+                console.error("Failed to create framebuffers or textures.");
+                return false;
+            }
+
+            textures.push(texFbo1.texture);
+            textures.push(texFbo2.texture);
+            fbos.push(texFbo1.fbo);
+            fbos.push(texFbo2.fbo);
+            
+            return true;
+        }
+
+        /**
+         * 頂点バッファをプログラムにアタッチする
+         */
+        function setupVertexBuffer(program) {
+            const positionAttrib = gl.getAttribLocation(program, 'a_position');
+            gl.enableVertexAttribArray(positionAttrib);
+            gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+            gl.vertexAttribPointer(positionAttrib, 2, gl.FLOAT, false, 0, 0);
+        }
+
+        // --- シミュレーション関数 (v4: WebGL版) -----------------------------------
+
+        /**
+         * 指定したテクスチャに「種」をまく
+         */
+        function addSeed(x, y, size = 10) {
+            const readFBO = fbos[currentState];
+            const readTex = textures[currentState];
+            
+            // 次の状態（書き込み先）を決定
+            currentState = 1 - currentState;
+            const writeFBO = fbos[currentState];
+            
+            // シード描画プログラムを使用
+            gl.useProgram(seedProgram);
+            
+            // 描画先を書き込みFBOに設定
+            gl.bindFramebuffer(gl.FRAMEBUFFER, writeFBO);
+            gl.viewport(0, 0, SIM_SIZE, SIM_SIZE);
+            setupVertexBuffer(seedProgram);
+
+            // 読み込みテクスチャを設定
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, readTex);
+            gl.uniform1i(gl.getUniformLocation(seedProgram, 'u_texture'), 0);
+            
+            // シード用の uniform を設定 (座標系を 0.0 ~ 1.0 に変換)
+            gl.uniform2f(gl.getUniformLocation(seedProgram, 'u_resolution'), SIM_SIZE, SIM_SIZE);
+            gl.uniform2f(gl.getUniformLocation(seedProgram, 'u_center'), x / SIM_SIZE, y / SIM_SIZE);
+            gl.uniform1f(gl.getUniformLocation(seedProgram, 'u_radius'), size); // ピクセル単位の半径
+
+            // 矩形を描画
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            
+            // v: 修正 - FBOバインドを解除 (この関数内では解除しない)
+            // gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+
+        /**
+         * シミュレーショングリッドを初期化する
+         */
+        function initGrids() {
+            // 両方のFBOを初期状態 (A=1.0, B=0.0) でクリア
+            for (const fbo of fbos) {
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                gl.viewport(0, 0, SIM_SIZE, SIM_SIZE);
+                // A=1.0, B=0.0, G=0.0, A=1.0
+                gl.clearColor(1.0, 0.0, 0.0, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+            // 中央に B の「種」をまく
+            const center = Math.floor(SIM_SIZE / 2);
+            addSeed(center, center, 20); // 少し大きめに
+        }
+
+        /**
+         * シミュレーションを1ステップ進める
+         */
+        function simulateStep() {
+            const { f, k, dA, dB, dt } = params;
+            
+            const readTex = textures[currentState];
+            
+            // 次の状態（書き込み先）を決定
+            currentState = 1 - currentState;
+            const writeFBO = fbos[currentState];
+
+            // シミュレーションプログラムを使用
+            gl.useProgram(simProgram);
+            
+            // 描画先を書き込みFBOに設定
+            gl.bindFramebuffer(gl.FRAMEBUFFER, writeFBO);
+            gl.viewport(0, 0, SIM_SIZE, SIM_SIZE);
+            setupVertexBuffer(simProgram);
+            
+            // 読み込みテクスチャを設定
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, readTex);
+            gl.uniform1i(gl.getUniformLocation(simProgram, 'u_texture'), 0);
+            
+            // パラメータを uniform としてシェーダーに送信
+            gl.uniform2f(gl.getUniformLocation(simProgram, 'u_resolution'), SIM_SIZE, SIM_SIZE);
+            gl.uniform1f(gl.getUniformLocation(simProgram, 'u_f'), f);
+            gl.uniform1f(gl.getUniformLocation(simProgram, 'u_k'), k);
+            gl.uniform1f(gl.getUniformLocation(simProgram, 'u_dA'), dA);
+            gl.uniform1f(gl.getUniformLocation(simProgram, 'u_dB'), dB);
+            gl.uniform1f(gl.getUniformLocation(simProgram, 'u_dt'), dt);
+
+            // 矩形を描画（＝シミュレーションを1ステップ実行）
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            
+            // バインドを解除
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+
+        /**
+         * シミュレーショングリッドを「非表示」キャンバスに描画する
+         */
+        function drawCanvas() {
+            const readTex = textures[currentState];
+            
+            // 描画プログラムを使用
+            gl.useProgram(drawProgram);
+            
+            // 描画先を display-canvas (WebGLキャンバス) に設定
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null); // null = canvas本体
+            gl.viewport(0, 0, SIM_SIZE, SIM_SIZE);
+            setupVertexBuffer(drawProgram);
+            
+            // 読み込みテクスチャ（最新の状態）を設定
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, readTex);
+            gl.uniform1i(gl.getUniformLocation(drawProgram, 'u_texture'), 0);
+
+            // 矩形を描画
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            
+            // v: 修正 - pattern をここで作成 (cover 実装から復元)
+            pattern = bgCtx.createPattern(canvas, 'repeat');
+        }
+
+        /**
+         * 「表示用」背景キャンバスをパターンで満たす
+         */
+        function updateBackground() {
+            if (!pattern) return; 
+
+            bgCtx.resetTransform(); 
+            bgCtx.scale(dpr, dpr); 
+
+            // v: 修正 - 座標系を (-offsetX, -offsetY) 移動
+            // これにより、画面 (0,0) でサンプリングされるパターン座標は (offsetX, offsetY) となる
+            bgCtx.translate(-patternOffset.x, -patternOffset.y);
+            
+            bgCtx.fillStyle = pattern;
+            
+            // v: 修正 - 描画は (0,0) からではなく、移動後の座標系で
+            // v: 画面 (0,0) に対応する (offsetX, offsetY) から描画する
+            bgCtx.fillRect(
+                patternOffset.x, 
+                patternOffset.y, 
+                window.innerWidth, 
+                window.innerHeight
+            );
+        }
+        
+        /**
+         * 背景キャンバスをリサイズする
+         */
+        function resizeBackground() {
+            dpr = window.devicePixelRatio || 1; 
+            bgCanvas.width = window.innerWidth * dpr;
+            bgCanvas.height = window.innerHeight * dpr;
+            bgCanvas.style.width = `${window.innerWidth}px`;
+            bgCanvas.style.height = `${window.innerHeight}px`;
+            
+            // v: 修正 - cover (ratio, offsetX) から タイリング (patternOffset) に戻す
+
+            const viewWidth = window.innerWidth;
+            const viewHeight = window.innerHeight;
+
+            // v: 画面中央とテクスチャ中央を計算
+            const midX_view = viewWidth / 2;
+            const midY_view = viewHeight / 2;
+            const midX_tex = SIM_SIZE / 2;
+            const midY_tex = SIM_SIZE / 2;
+
+            // v: 画面(0,0)に描画されるべきテクスチャ座標 (論理ピクセル単位、左上原点)
+            // ( ( (A - B) % C ) + C ) % C で正の剰余を計算
+            // v: Math.floor を使い、ピクセルズレ (ぼやけ) を防ぐ
+            patternOffset.x = Math.floor((((midX_tex - midX_view) % SIM_SIZE) + SIM_SIZE) % SIM_SIZE);
+            patternOffset.y = Math.floor((((midX_tex - midY_view) % SIM_SIZE) + SIM_SIZE) % SIM_SIZE);
+
+            checkMobileControls();
+
+            // 停止中でもリサイズしたら背景を再描画
+            // v: 修正 - canvas ではなく pattern をチェック
+            if (!isRunning && pattern) { 
+                updateBackground();
+            }
+        }
+        
+        /**
+         * メインの描画ループ
+         */
+        function renderLoop() {
+            if (!isRunning) {
+                animationFrameId = null; // 停止したらIDをクリア
+                return;
+            }
+
+            // 1フレームあたりのシミュレーション回数を params.speed から取得
+            const stepsPerFrame = params.speed;
+            for (let i = 0; i < stepsPerFrame; i++) {
+                simulateStep();
+            }
+            
+            drawCanvas(); // 非表示キャンバスを更新
+            updateBackground(); // 表示キャンバスを更新
+            
+            animationFrameId = requestAnimationFrame(renderLoop);
+        }
+
+        // --- イベントリスナー -----------------------------------------------------
+
+        function updateParamsFromSliders() {
+            params.f = parseFloat(sliders.f.value);
+            params.k = parseFloat(sliders.k.value);
+            params.dA = parseFloat(sliders.dA.value);
+            params.dB = parseFloat(sliders.dB.value);
+            params.dt = parseFloat(sliders.dt.value);
+            params.speed = parseInt(sliders.speed.value, 10); 
+            
+            values.f.textContent = params.f.toFixed(3);
+            values.k.textContent = params.k.toFixed(3);
+            values.dA.textContent = params.dA.toFixed(2);
+            values.dB.textContent = params.dB.toFixed(2);
+            values.dt.textContent = params.dt.toFixed(2); // v: 修正 (小数点2桁)
+            values.speed.textContent = params.speed.toString(); 
+        }
+        
+        function updateSlidersFromParams(p) {
+            sliders.f.value = p.f;
+            sliders.k.value = p.k;
+            sliders.dA.value = p.dA;
+            sliders.dB.value = p.dB;
+            // dt, speed はプリセットに含まないので更新しない
+            updateParamsFromSliders();
+        }
+        
+        function stopAnimation() {
+            isRunning = false;
+            pauseButton.textContent = 'Resume';
+            pauseButton.classList.replace('bg-gray-200', 'bg-yellow-400');
+            pauseButton.classList.replace('text-black', 'text-black');
+            pauseButton.classList.replace('hover:bg-white', 'hover:bg-yellow-300');
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+        }
+
+        function startAnimation() {
+            isRunning = true;
+            pauseButton.textContent = 'Pause';
+            pauseButton.classList.replace('bg-yellow-400', 'bg-gray-200');
+            pauseButton.classList.replace('text-black', 'text-black');
+            pauseButton.classList.replace('hover:bg-yellow-300', 'hover:bg-white');
+            if (!animationFrameId) {
+                renderLoop();
+            }
+        }
+        
+        function checkMobileControls() {
+            if (window.innerWidth < 1024) { // lg ブレークポイント
+                if (!controlsBody.classList.contains('hidden')) {
+                    controlsBody.classList.add('hidden');
+                    controlsIconOpen.classList.add('hidden');
+                    controlsIconClosed.classList.remove('hidden');
+                }
+            } else {
+                controlsBody.classList.remove('hidden');
+                controlsIconOpen.classList.remove('hidden');
+                controlsIconClosed.classList.add('hidden');
+            }
+        }
+        
+        Object.values(sliders).forEach(slider => {
+            slider.addEventListener('input', () => {
+                updateParamsFromSliders();
+                presetSelect.value = "custom";
+            });
+        });
+
+        presetSelect.addEventListener('change', (e) => {
+            const presetName = e.target.value;
+            if (presetName !== "custom") {
+                const presetParams = presets[presetName];
+                updateSlidersFromParams(presetParams); 
+                initGrids(); 
+                if (!isRunning) startAnimation();
+            }
+        });
+
+        pauseButton.addEventListener('click', () => {
+            if (isRunning) {
+                stopAnimation();
+            } else {
+                startAnimation();
+            }
+        });
+        
+        resetButton.addEventListener('click', () => {
+            initGrids();
+            if (!isRunning) {
+                drawCanvas(); // 停止中でもリセット結果を表示
+                updateBackground();
+            }
+        });
+
+        downloadButton.addEventListener('click', () => {
+            const wasRunning = isRunning;
+            if (wasRunning) stopAnimation();
+            
+            drawCanvas(); 
+            
+            const link = document.createElement('a');
+            link.download = `turing-pattern-1024px-${Date.now()}.png`;
+            link.href = canvas.toDataURL('image/png'); 
+            link.click();
+            
+            if (wasRunning) startAnimation();
+        });
+        
+        toggleControlsBtn.addEventListener('click', () => {
+            controlsBody.classList.toggle('hidden');
+            controlsIconOpen.classList.toggle('hidden');
+            controlsIconClosed.classList.toggle('hidden');
+        });
+        
+        window.addEventListener('resize', resizeBackground);
+
+        /**
+         * マウスイベントからグリッド座標を計算し、種を追加する
+         */
+        function addSeedAtEvent(e) {
+            const event = e.touches ? e.touches[0] : e;
+            e.preventDefault(); 
+
+            const viewX = event.clientX; // 画面の論理ピクセル (左上原点)
+            const viewY = event.clientY; // 画面の論理ピクセル (左上原点)
+
+            // v: 修正 - cover (renderState) から patternOffset ロジックに戻す
+            
+            // 1. 画面座標 (viewX, viewY) に対応するテクスチャ座標 (左上原点, [0, SIM_SIZE])
+            // v: 剰余計算が正しく行われるよう修正
+            const texX_TopLeft = ((patternOffset.x + viewX) % SIM_SIZE + SIM_SIZE) % SIM_SIZE;
+            const texY_TopLeft = ((patternOffset.y + viewY) % SIM_SIZE + SIM_SIZE) % SIM_SIZE;
+
+            // 2. 範囲外チェックは不要 (タイリングのため)
+            // if (texX_TopLeft < 0 || ...) { return; }
+
+            // 3. addSeed は WebGL の u_center (左下原点) を期待しているためY座標を反転
+            const gridX_for_addSeed = texX_TopLeft;
+            const gridY_for_addSeed = SIM_SIZE - texY_TopLeft; // Y座標を反転 (左上 -> 左下)
+
+            addSeed(gridX_for_addSeed, gridY_for_addSeed, 10);
+        }
+
+        bgCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            addSeedAtEvent(e);
+        });
+        
+        bgCanvas.addEventListener('mousemove', (e) => {
+            if (isDrawing) {
+                addSeedAtEvent(e);
+            }
+        });
+
+        bgCanvas.addEventListener('mouseup', () => {
+            isDrawing = false;
+        });
+
+        bgCanvas.addEventListener('touchstart', (e) => {
+            isDrawing = true;
+            addSeedAtEvent(e);
+        });
+
+        bgCanvas.addEventListener('touchmove', (e) => {
+            if (isDrawing) {
+                addSeedAtEvent(e);
+            }
+        });
+
+        bgCanvas.addEventListener('touchend', () => {
+            isDrawing = false;
+        });
+        
+        // --- 初期化 ---------------------------------------------------------------
+        function main() {
+            if (!initWebGL()) {
+                return; 
+            }
+
+            resizeBackground(); 
+            updateParamsFromSliders();
+            checkMobileControls(); 
+            initGrids();
+            drawCanvas(); 
+            updateBackground(); 
+            startAnimation(); 
+        }
+
+        main();
+
+    </script>
+</body>
+</html>
