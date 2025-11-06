@@ -1,0 +1,2 @@
+# TuringPattern_Generator
+反応拡散系のシームレステクスチャを生成できるWebツール
